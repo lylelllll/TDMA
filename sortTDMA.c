@@ -7,10 +7,23 @@
 #define NUM_DRONES_PER_CLUSTER 10
 #define NUM_CLUSTERS 10
 #define TDMA_SLOT_TIME_US 50000 // 每个无人机的时间槽，以微秒为单位（0.05秒）
-#define TOTAL_TIME_SLOTS 60     // 总模拟时隙数（调整以匹配新的时隙长度）
+#define TOTAL_TIME_SLOTS 50     // 总模拟时隙数（调整以匹配新的时隙长度）
 
 // 数据包大小（字节）
 #define PACKET_SIZE 256
+
+// 定义一个枚举类型来表示不同的信道状态
+typedef enum {
+    CHANNEL_CLASH = -1,   // 信道冲突
+    CHANNEL_IDLE = 0,     // 信道空闲
+    CHANNEL_RTS = 1,      // 被请求帧占有
+    CHANNEL_CTS = 2,      // 被响应帧占有
+    CHANNEL_DATA = 3,     // 被数据包占有
+    CHANNEL_EXTRA = 4,    // 被簇间通信占有
+    CHANNEL_ACI = 5,      // 被确认帧占有
+    CHANNEL_BEACON = 6,   // 被信标占有
+    CHANNEL_PACKET = 7    // 被包占有
+} ChannelState;
 
 // 定义表示无人机的Node结构
 typedef struct {
@@ -23,7 +36,7 @@ typedef struct {
 
 // 定义表示信道的Channel结构
 typedef struct {
-    int state; // 信道状态：0为空闲，1为繁忙
+    ChannelState state; // 信道状态
 } Channel;
 
 // 定义表示簇的Cluster结构
@@ -69,7 +82,7 @@ void initialize_clusters(Cluster clusters[]) {
                 break;
             }
         }
-        clusters[c].channel.state = 0; // 初始化信道为空闲状态
+        clusters[c].channel.state = CHANNEL_IDLE; // 初始化信道为空闲状态
     }
 }
 
@@ -134,8 +147,8 @@ void send_data(Node* drone, Cluster* cluster) {
 
     counts[cluster->id]++;
     
-    // 设置信道为繁忙状态
-    cluster->channel.state = 1;
+    // 设置信道为被数据包占有状态
+    cluster->channel.state = CHANNEL_DATA;
 
     // 模拟一些处理延迟（示例目的）
     usleep(5000); // 睡眠5毫秒以模拟发送延迟
@@ -153,7 +166,7 @@ void send_data(Node* drone, Cluster* cluster) {
     drone->energy--;
 
     // 设置信道为空闲状态
-    cluster->channel.state = 0;
+    cluster->channel.state = CHANNEL_IDLE;
 }
 
 // 每一轮或模拟结束时打印统计数据
@@ -189,10 +202,10 @@ void print_final_statistics() {
 
 void update_cluster(Cluster* cluster, int current_time){
     Node* drone = &cluster->drones[current_time%NUM_DRONES_PER_CLUSTER];
-    if (cluster->channel.state == 0 && drone->energy > 0) {
+    if (cluster->channel.state == CHANNEL_IDLE && drone->energy > 0) {
         send_data(drone, cluster);
-    } else if (cluster->channel.state != 0) {
-        printf("Channel of Cluster %d is currently busy, skipping this transmission.\n", cluster->id);
+    } else if (cluster->channel.state != CHANNEL_IDLE) {
+        printf("Channel of Cluster %d is currently busy with state %d, skipping this transmission.\n", cluster->id, cluster->channel.state);
     } else {
         printf("Skipping transmission from Drone %d in Cluster %d due to lack of energy.\n", drone->id, cluster->id);
     }
