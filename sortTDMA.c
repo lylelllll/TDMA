@@ -7,7 +7,7 @@
 #define NUM_DRONES_PER_CLUSTER 10
 #define NUM_CLUSTERS 10
 #define TDMA_SLOT_TIME_US 50000 // 每个无人机的时间槽，以微秒为单位（0.05秒）
-#define TOTAL_TIME_SLOTS 50     // 总模拟时隙数（调整以匹配新的时隙长度）
+#define TOTAL_TIME_SLOTS 60     // 总模拟时隙数（调整以匹配新的时隙长度）
 
 // 数据包大小（字节）
 #define PACKET_SIZE 256
@@ -58,8 +58,8 @@ void initialize_clusters(Cluster clusters[]) {
             // 为无人机分配随机位置坐标，基于当前簇的坐标范围
             clusters[c].drones[d].x = ((double)rand() / RAND_MAX) * (range_end - range_start) + range_start;
             clusters[c].drones[d].y = ((double)rand() / RAND_MAX) * (range_end - range_start) + range_start;
-            // 为无人机分配初始能量
-            clusters[c].drones[d].energy = 100; // 假设每个节点的初始能量为100
+            // 为无人机分配初始能量（随机5-10之间的整数）
+            clusters[c].drones[d].energy = rand() % 6 + 5; // 随机整数范围 [5, 10]
         }
         // 设置簇头
         for (int d = 0; d < NUM_DRONES_PER_CLUSTER; ++d) {
@@ -168,7 +168,8 @@ void print_statistics(int round_counter) {
             printf("Cluster %d: Total transmissions: %d, Average delay time: %.6f seconds, Total delay time: %.6f seconds\n",
                    c + 1, counts[c], avg_delay, total_delay);
         }
-        printf("--------------------------------------\n");    }
+        printf("--------------------------------------\n");    
+    }
 }
 
 // 模拟结束后输出最终统计数据
@@ -187,10 +188,13 @@ void print_final_statistics() {
 }
 
 void update_cluster(Cluster* cluster, int current_time){
-    if (cluster->channel.state == 0) {
-        send_data(&cluster->drones[current_time%NUM_DRONES_PER_CLUSTER], cluster);
-    } else {
+    Node* drone = &cluster->drones[current_time%NUM_DRONES_PER_CLUSTER];
+    if (cluster->channel.state == 0 && drone->energy > 0) {
+        send_data(drone, cluster);
+    } else if (cluster->channel.state != 0) {
         printf("Channel of Cluster %d is currently busy, skipping this transmission.\n", cluster->id);
+    } else {
+        printf("Skipping transmission from Drone %d in Cluster %d due to lack of energy.\n", drone->id, cluster->id);
     }
 }
 
