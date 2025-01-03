@@ -18,6 +18,7 @@ typedef struct {
     double send_will; // 发送欲望
     int is_head;      // 是否为簇头
     double x, y;      // 无人机的位置坐标
+    int energy;       // 节点的能量
 } Node;
 
 // 定义表示信道的Channel结构
@@ -57,6 +58,8 @@ void initialize_clusters(Cluster clusters[]) {
             // 为无人机分配随机位置坐标，基于当前簇的坐标范围
             clusters[c].drones[d].x = ((double)rand() / RAND_MAX) * (range_end - range_start) + range_start;
             clusters[c].drones[d].y = ((double)rand() / RAND_MAX) * (range_end - range_start) + range_start;
+            // 为无人机分配初始能量
+            clusters[c].drones[d].energy = 100; // 假设每个节点的初始能量为100
         }
         // 设置簇头
         for (int d = 0; d < NUM_DRONES_PER_CLUSTER; ++d) {
@@ -145,6 +148,9 @@ void send_data(Node* drone, Cluster* cluster) {
     total_transmissions[cluster->id]++;
     total_delay_time[cluster->id] += elapsed_time;
     total_bytes_transmitted[cluster->id] += PACKET_SIZE; // 更新传输的总字节数
+
+    // 减少节点的能量
+    drone->energy--;
 
     // 设置信道为空闲状态
     cluster->channel.state = 0;
@@ -246,6 +252,13 @@ int main() {
 
     // 开始模拟
     simulate_tdma_communication(clusters);
+
+    // 打印所有节点剩余能量
+    for (int c = 0; c < NUM_CLUSTERS; ++c) {
+        for (int d = 0; d < NUM_DRONES_PER_CLUSTER; ++d) {
+            printf("Drone %d in Cluster %d has remaining energy: %d\n", clusters[c].drones[d].id, c + 1, clusters[c].drones[d].energy);
+        }
+    }
 
     return 0;
 }
