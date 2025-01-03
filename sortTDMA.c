@@ -2,13 +2,12 @@
 #include <stdlib.h> // 用于rand和srand函数
 #include <unistd.h> // 用于usleep函数
 #include <time.h>   // 用于时间函数
-#include <limits.h>
-
+#include <limits.h> // 用于INT_MAX
 
 #define NUM_DRONES_PER_CLUSTER 10
 #define NUM_CLUSTERS 10
 #define TDMA_SLOT_TIME_US 50000 // 每个无人机的时间槽，以微秒为单位（0.05秒）
-#define TOTAL_TIME_SLOTS 50   // 总模拟时隙数（调整以匹配新的时隙长度）
+#define TOTAL_TIME_SLOTS 50     // 总模拟时隙数（调整以匹配新的时隙长度）
 
 // 数据包大小（字节）
 #define PACKET_SIZE 256
@@ -18,6 +17,7 @@ typedef struct {
     int id;           // 无人机ID
     double send_will; // 发送欲望
     int is_head;      // 是否为簇头
+    double x, y;      // 无人机的位置坐标
 } Node;
 
 // 定义表示信道的Channel结构
@@ -40,17 +40,23 @@ volatile int total_transmissions[NUM_CLUSTERS] = {0};
 volatile double total_delay_time[NUM_CLUSTERS] = {0.0};
 volatile long total_bytes_transmitted[NUM_CLUSTERS] = {0}; // 新增：统计传输的总字节数
 
-// 初始化簇并分配无人机ID，并确定簇头
+// 初始化簇并分配无人机ID，并确定簇头和随机位置坐标
 void initialize_clusters(Cluster clusters[]) {
     for (int c = 0; c < NUM_CLUSTERS; ++c) {
         clusters[c].id = c;
         int min_id = INT_MAX;
+        double range_start = c * 1000; // 根据簇ID确定坐标范围起点
+        double range_end = (c + 1) * 1000; // 根据簇ID确定坐标范围终点
+
         for (int d = 0; d < NUM_DRONES_PER_CLUSTER; ++d) {
             clusters[c].drones[d].id = c * NUM_DRONES_PER_CLUSTER + d + 1;
             clusters[c].drones[d].is_head = 0;
             if (clusters[c].drones[d].id < min_id) {
                 min_id = clusters[c].drones[d].id;
             }
+            // 为无人机分配随机位置坐标，基于当前簇的坐标范围
+            clusters[c].drones[d].x = ((double)rand() / RAND_MAX) * (range_end - range_start) + range_start;
+            clusters[c].drones[d].y = ((double)rand() / RAND_MAX) * (range_end - range_start) + range_start;
         }
         // 设置簇头
         for (int d = 0; d < NUM_DRONES_PER_CLUSTER; ++d) {
@@ -117,7 +123,7 @@ void send_data(Node* drone, Cluster* cluster) {
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    printf("Drone %d in Cluster %d", drone->id, cluster->id);
+    printf("Drone %d at (%.2f, %.2f) in Cluster %d", drone->id, drone->x, drone->y, cluster->id);
     if (drone->is_head) {
         printf(" (Head)");
     }
@@ -176,7 +182,7 @@ void print_final_statistics() {
 
 void update_cluster(Cluster* cluster, int current_time){
     if (cluster->channel.state == 0) {
-        send_data(&cluster->drones[current_time%10], cluster);
+        send_data(&cluster->drones[current_time%NUM_DRONES_PER_CLUSTER], cluster);
     } else {
         printf("Channel of Cluster %d is currently busy, skipping this transmission.\n", cluster->id);
     }
@@ -201,22 +207,20 @@ void simulate_tdma_communication(Cluster clusters[]) {
     while (slot_counter < TOTAL_TIME_SLOTS) { // 模拟循环
         show_slot_start(slot_counter);
 
-
         // 每一轮开始时生成发送欲望并排序
-        if (slot_counter % 10 == 0)generate_send_will(clusters);
+        if (slot_counter % 10 == 0) generate_send_will(clusters);
 
-        //更新当前时隙下里的每个簇
-        for(int c = 0; c < NUM_CLUSTERS; ++c) {
+        // 更新当前时隙下的每个簇
+        for (int c = 0; c < NUM_CLUSTERS; ++c) {
             update_cluster(&clusters[c], slot_counter);
         }
-
 
         // 每个时间槽之间等待一段时间
         usleep(TDMA_SLOT_TIME_US);
         slot_counter++;
         show_slot_stop(slot_counter);   
 
-        if (slot_counter % 10 == 0){
+        if (slot_counter % 10 == 0) {
             round_counter++;
             print_statistics(round_counter);
             // 在每轮结束时重置每个簇的统计信息
@@ -226,16 +230,12 @@ void simulate_tdma_communication(Cluster clusters[]) {
             }
         }
 
-        
-
         // 如果达到了总时隙数，结束模拟
         if (slot_counter >= TOTAL_TIME_SLOTS) break;
-
     }
 
     // 模拟结束后输出最终统计数据
     print_final_statistics();
-    
 }
 
 int main() {
