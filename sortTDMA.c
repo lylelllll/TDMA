@@ -3,10 +3,10 @@
 #include <time.h>   // 用于时间函数
 #include <limits.h> // 用于INT_MAX
 
-#define NUM_DRONES_PER_CLUSTER 10
-#define NUM_CLUSTERS 10
+#define NUM_DRONES_PER_CLUSTER 20
+#define NUM_CLUSTERS 15
 #define SLOT_TIME 51.2 // 每个时隙的时间长度，以微秒为单位
-#define TOTAL_TIME_SLOTS 60 // 总模拟时隙数（调整以匹配新的时隙长度）
+#define TOTAL_TIME_SLOTS 140 // 总模拟时隙数（调整以匹配新的时隙长度）
 
 // 数据包大小（字节）
 #define PACKET_SIZE 256
@@ -147,15 +147,15 @@ void send_data(Node* drone, Cluster* cluster, int slot_counter) {
     cluster->channel.state = CHANNEL_DATA;
 
     // 更新整个模拟过程中的总传输次数和总延迟时间
-    total_transmissions[cluster->id%10][drone->id%10]++;
+    total_transmissions[cluster->id%NUM_CLUSTERS][drone->id%NUM_DRONES_PER_CLUSTER]++;
 
     // 减少节点的能量
     drone->energy--;
 
     drone->end_slot = slot_counter; // 记录发送成功时隙编号
     double delaytime = (drone->end_slot-drone->start_slot+1)*SLOT_TIME;
-    printf(" sent finish. Delay_time:%.6f ms\n",delaytime);
-    total_delay_time[cluster->id%10][drone->id%10] += delaytime;
+    printf(" sent finish. Delay_time:%.6f ms\n",delaytime/1000);
+    total_delay_time[cluster->id%NUM_CLUSTERS][drone->id%NUM_DRONES_PER_CLUSTER] += delaytime;
 
     // 设置信道为空闲状态
     cluster->channel.state = CHANNEL_IDLE;
@@ -172,9 +172,9 @@ void print_final_statistics(Cluster clusters[]) {
     for (int c = 0; c < NUM_CLUSTERS; ++c) {
         for (int d = 0; d < NUM_DRONES_PER_CLUSTER; ++d) {
             Node drone = clusters[c].drones[d];
-            double avg_delaytime = total_delay_time[c][d]/total_transmissions[c][d];
-            double avg_throughput = ((total_transmissions[c][d]*PACKET_SIZE)/total_delay_time[c][d])*1000000/1024;
-            printf("Drone %d in Cluster %d avg_delaytime: %.6fms avg_throughput: %.6fKB/s  remaining energy: %d\n", drone.id,  clusters[c].id, avg_delaytime, avg_throughput,clusters[c].drones[d].energy);
+            double avg_delaytime = total_delay_time[c][d]/total_transmissions[c][d]/1000;
+            double avg_throughput = ((total_transmissions[c][d]*PACKET_SIZE)/total_delay_time[c][d])*1000000/(1024*1024);
+            printf("Drone %d in Cluster %d avg_delaytime: %.6fms avg_throughput: %.6fMB/s  remaining energy: %d\n", drone.id,  clusters[c].id, avg_delaytime, avg_throughput,clusters[c].drones[d].energy);
 
 
         }
