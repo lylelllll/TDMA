@@ -1,13 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h> // 用于rand和srand函数
-#include <unistd.h> // 用于usleep函数
 #include <time.h>   // 用于时间函数
 #include <limits.h> // 用于INT_MAX
 
 #define NUM_DRONES_PER_CLUSTER 10
 #define NUM_CLUSTERS 10
-#define TDMA_SLOT_TIME_US 50000 // 每个无人机的时间槽，以微秒为单位（0.05秒）
-#define TOTAL_TIME_SLOTS 50     // 总模拟时隙数（调整以匹配新的时隙长度）
+#define SLOT_TIME 51.2 // 每个时隙的时间长度，以微秒为单位
+#define TOTAL_TIME_SLOTS 60 // 总模拟时隙数（调整以匹配新的时隙长度）
 
 // 数据包大小（字节）
 #define PACKET_SIZE 256
@@ -32,6 +31,8 @@ typedef struct {
     int is_head;      // 是否为簇头
     double x, y;      // 无人机的位置坐标
     int energy;       // 节点的能量
+    int start_slot;   // 发送开始的时隙编号
+    int end_slot;     // 发送成功的时隙编号
 } Node;
 
 // 定义表示信道的Channel结构
@@ -48,11 +49,9 @@ typedef struct {
 } Cluster;
 
 // 全局变量，用于统计每个簇的发送次数、延迟时间和总传输字节数
-volatile int counts[NUM_CLUSTERS] = {0};
-volatile double delaytimes[NUM_CLUSTERS] = {0.0};
-volatile int total_transmissions[NUM_CLUSTERS] = {0};
-volatile double total_delay_time[NUM_CLUSTERS] = {0.0};
-volatile long total_bytes_transmitted[NUM_CLUSTERS] = {0}; // 新增：统计传输的总字节数
+volatile int total_transmissions[NUM_CLUSTERS][NUM_DRONES_PER_CLUSTER] = {0};
+volatile double total_delay_time[NUM_CLUSTERS][NUM_DRONES_PER_CLUSTER] = {0.0};
+
 
 // 初始化簇并分配无人机ID，并确定簇头和随机位置坐标
 void initialize_clusters(Cluster clusters[]) {
@@ -73,6 +72,8 @@ void initialize_clusters(Cluster clusters[]) {
             clusters[c].drones[d].y = ((double)rand() / RAND_MAX) * (range_end - range_start) + range_start;
             // 为无人机分配初始能量（随机5-10之间的整数）
             clusters[c].drones[d].energy = rand() % 6 + 5; // 随机整数范围 [5, 10]
+            clusters[c].drones[d].start_slot = -1; // 初始化发送开始时隙编号
+            clusters[c].drones[d].end_slot = -1;   // 初始化发送成功时隙编号
         }
         // 设置簇头
         for (int d = 0; d < NUM_DRONES_PER_CLUSTER; ++d) {
@@ -124,10 +125,11 @@ void sort_drones_by_send_will(Node drones[], int num_drones) {
 }
 
 // 生成每个无人机的发送欲望
-void generate_send_will(Cluster clusters[]) {
+void generate_send_will(Cluster clusters[], int current_slot) {
     for (int c = 0; c < NUM_CLUSTERS; ++c) {
         for (int d = 0; d < NUM_DRONES_PER_CLUSTER; ++d) {
             clusters[c].drones[d].send_will = (double)rand() / RAND_MAX;
+            clusters[c].drones[d].start_slot = current_slot;
         }
         // 对当前簇内的无人机按发送欲望排序
         sort_drones_by_send_will(clusters[c].drones, NUM_DRONES_PER_CLUSTER);
@@ -135,67 +137,48 @@ void generate_send_will(Cluster clusters[]) {
 }
 
 // 模拟无人机发送数据
-void send_data(Node* drone, Cluster* cluster) {
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-
+void send_data(Node* drone, Cluster* cluster, int slot_counter) {
     printf("Drone %d at (%.2f, %.2f) in Cluster %d", drone->id, drone->x, drone->y, cluster->id);
     if (drone->is_head) {
         printf(" (Head)");
     }
-    printf(" is sending data.\n");
-
-    counts[cluster->id]++;
     
     // 设置信道为被数据包占有状态
     cluster->channel.state = CHANNEL_DATA;
 
-    // 模拟一些处理延迟（示例目的）
-    usleep(5000); // 睡眠5毫秒以模拟发送延迟
-
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    double elapsed_time = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-    delaytimes[cluster->id] += elapsed_time;
-
     // 更新整个模拟过程中的总传输次数和总延迟时间
-    total_transmissions[cluster->id]++;
-    total_delay_time[cluster->id] += elapsed_time;
-    total_bytes_transmitted[cluster->id] += PACKET_SIZE; // 更新传输的总字节数
+    total_transmissions[cluster->id%10][drone->id%10]++;
 
     // 减少节点的能量
     drone->energy--;
+
+    drone->end_slot = slot_counter; // 记录发送成功时隙编号
+    double delaytime = (drone->end_slot-drone->start_slot+1)*SLOT_TIME;
+    printf(" sent finish. Delay_time:%.6f ms\n",delaytime);
+    total_delay_time[cluster->id%10][drone->id%10] += delaytime;
 
     // 设置信道为空闲状态
     cluster->channel.state = CHANNEL_IDLE;
 }
 
-// 每一轮或模拟结束时打印统计数据
-void print_statistics(int round_counter) {
-    if (round_counter > 0) {
-
-        printf("--------------------------------------\n");
-        printf("Round %d:\n", round_counter);
-        for (int c = 0; c < NUM_CLUSTERS; ++c) {
-            double avg_delay = counts[c] > 0 ? delaytimes[c] / counts[c] : 0;
-            double total_delay = counts[c] * avg_delay;
-            printf("Cluster %d: Total transmissions: %d, Average delay time: %.6f seconds, Total delay time: %.6f seconds\n",
-                   c + 1, counts[c], avg_delay, total_delay);
-        }
-        printf("--------------------------------------\n");    
-    }
-}
 
 // 模拟结束后输出最终统计数据
-void print_final_statistics() {
+void print_final_statistics(Cluster clusters[]) {
     printf("\n");
     printf("\n");
     printf("Simulation ended after %d time slots.\n", TOTAL_TIME_SLOTS);
     printf("--------------------------------------\n"); 
     printf("Final statistics after the entire simulation:\n");
     for (int c = 0; c < NUM_CLUSTERS; ++c) {
-        double throughput = total_delay_time[c] > 0 ? (total_bytes_transmitted[c] / total_delay_time[c]) : 0;
-        printf("Cluster %d: Total packets sent: %d, Total delay time: %.6f seconds, Total bytes transmitted: %ld, Throughput: %.6f B/s\n",
-               c + 1, total_transmissions[c], total_delay_time[c], total_bytes_transmitted[c], throughput);
+        for (int d = 0; d < NUM_DRONES_PER_CLUSTER; ++d) {
+            Node drone = clusters[c].drones[d];
+            double avg_delaytime = total_delay_time[c][d]/total_transmissions[c][d];
+            double avg_throughput = ((total_transmissions[c][d]*PACKET_SIZE)/total_delay_time[c][d])*1000000/1024;
+            printf("Drone %d in Cluster %d avg_delaytime: %.6fms avg_throughput: %.6fKB/s  remaining energy: %d\n", drone.id,  clusters[c].id, avg_delaytime, avg_throughput,clusters[c].drones[d].energy);
+
+
+        }
+
     }
     printf("--------------------------------------\n"); 
 }
@@ -203,7 +186,7 @@ void print_final_statistics() {
 void update_cluster(Cluster* cluster, int current_time){
     Node* drone = &cluster->drones[current_time%NUM_DRONES_PER_CLUSTER];
     if (cluster->channel.state == CHANNEL_IDLE && drone->energy > 0) {
-        send_data(drone, cluster);
+        send_data(drone, cluster, current_time);
     } else if (cluster->channel.state != CHANNEL_IDLE) {
         printf("Channel of Cluster %d is currently busy with state %d, skipping this transmission.\n", cluster->id, cluster->channel.state);
     } else {
@@ -216,7 +199,7 @@ void show_slot_start(int slot_counter){
     printf("Now is %d slot:\n", slot_counter);
 }
 
-void show_slot_stop(int slot_counter){
+void show_slot_stop(){
     printf("--------------------------------------\n");
     printf("\n");
     printf("\n");
@@ -231,26 +214,18 @@ void simulate_tdma_communication(Cluster clusters[]) {
         show_slot_start(slot_counter);
 
         // 每一轮开始时生成发送欲望并排序
-        if (slot_counter % 10 == 0) generate_send_will(clusters);
+        if (slot_counter % 10 == 0) generate_send_will(clusters,slot_counter);
 
         // 更新当前时隙下的每个簇
         for (int c = 0; c < NUM_CLUSTERS; ++c) {
             update_cluster(&clusters[c], slot_counter);
         }
 
-        // 每个时间槽之间等待一段时间
-        usleep(TDMA_SLOT_TIME_US);
         slot_counter++;
-        show_slot_stop(slot_counter);   
+        show_slot_stop();   
 
         if (slot_counter % 10 == 0) {
             round_counter++;
-            print_statistics(round_counter);
-            // 在每轮结束时重置每个簇的统计信息
-            for (int c = 0; c < NUM_CLUSTERS; ++c) {
-                counts[c] = 0;
-                delaytimes[c] = 0.0;
-            }
         }
 
         // 如果达到了总时隙数，结束模拟
@@ -258,7 +233,8 @@ void simulate_tdma_communication(Cluster clusters[]) {
     }
 
     // 模拟结束后输出最终统计数据
-    print_final_statistics();
+    print_final_statistics(clusters);
+
 }
 
 int main() {
@@ -270,12 +246,6 @@ int main() {
     // 开始模拟
     simulate_tdma_communication(clusters);
 
-    // 打印所有节点剩余能量
-    for (int c = 0; c < NUM_CLUSTERS; ++c) {
-        for (int d = 0; d < NUM_DRONES_PER_CLUSTER; ++d) {
-            printf("Drone %d in Cluster %d has remaining energy: %d\n", clusters[c].drones[d].id, c + 1, clusters[c].drones[d].energy);
-        }
-    }
 
     return 0;
 }
