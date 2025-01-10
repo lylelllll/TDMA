@@ -19,6 +19,37 @@
 #define CW_P2 16
 #define CW_P3 24
 
+// 请求帧大小 (单位: bits)
+#define RTS_SIZE (15 * 8)
+// 请求帧时隙
+#define RTS_SLOT 1
+
+// 响应帧大小 (单位: bits)
+#define CTS_SIZE (15 * 8)
+// 响应帧时隙
+#define CTS_SLOT 1
+
+// 确认帧大小 (单位: bits)
+#define ACI_SIZE (40 * 8)
+// 确认帧时隙
+#define ACI_SLOT 1
+
+// 信标大小 (单位: bits)
+#define BEACON_SIZE (8 * 8)
+// 信标时隙
+#define BEACON_SLOT 1
+
+// 数据包大小 (单位: bits)
+#define DATA_SIZE (20 * 8)
+// 数据包时隙
+#define DATA_SLOT 1
+
+// 大数据包大小 (单位: bits)
+#define PACKET_SIZE (200 * 8)
+// 大数据包时隙
+#define PACKET_SLOT 3
+
+
 // 定义一个枚举类型来表示不同的信道状态
 typedef enum {
     CHANNEL_CLASH = -1,   // 信道冲突
@@ -42,6 +73,7 @@ typedef struct {
     int start_slot;   // 发送开始的时隙编号
     int end_slot;     // 发送成功的时隙编号
     bool want_to_send; //节点是否有数据要发
+    bool able_send; //节点能否发
     int back_off_slot; //节点要退避的时隙数
     bool is_dead;
     int dead_slot;
@@ -53,6 +85,8 @@ typedef struct {
 typedef struct {
     ChannelState state; // 信道状态
     int state_update_slot;
+    int owner_id;
+    int nch_id;
 } Channel;
 
 // 定义表示簇的Cluster结构
@@ -69,6 +103,14 @@ volatile int total_transmissions[NUM_CLUSTERS][NUM_DRONES_PER_CLUSTER] = {0};
 volatile double total_delay_time[NUM_CLUSTERS][NUM_DRONES_PER_CLUSTER] = {0.0};
 volatile int total_clash_slot[NUM_CLUSTERS] = {0};
 volatile int total_idle_slot[NUM_CLUSTERS] = {0};
+volatile int total_rts[NUM_CLUSTERS] = {0};
+volatile int total_cts[NUM_CLUSTERS] = {0};
+volatile int total_data[NUM_CLUSTERS] = {0};
+volatile int total_aci[NUM_CLUSTERS] = {0};
+volatile int total_beacon[NUM_CLUSTERS] = {0};
+volatile int total_packet[NUM_CLUSTERS] = {0};
+
+
 
 
 // 初始化簇并分配无人机ID，并确定簇头和随机位置坐标
@@ -91,6 +133,7 @@ void initialize_clusters(Cluster clusters[]) {
             clusters[c].drones[d].start_slot = -1; // 初始化发送开始时隙编号
             clusters[c].drones[d].end_slot = -1;   // 初始化发送成功时隙编号
             clusters[c].drones[d].want_to_send = false;
+            clusters[c].drones[d].able_send = false;
             clusters[c].drones[d].is_dead = false;
             clusters[c].drones[d].delay_first = true;
             clusters[c].drones[d].back_off_slot = 0;
@@ -104,7 +147,13 @@ void initialize_clusters(Cluster clusters[]) {
                 break;
             }
         }
+
+        //簇内信道
         clusters[c].channel.state = CHANNEL_IDLE; // 初始化信道为空闲状态
+        clusters[c].channel.owner_id = -1;
+        clusters[c].channel.nch_id = -1;
+
+
     }
 }
 
@@ -175,10 +224,40 @@ void print_final_statistics(Cluster clusters[]) {
     printf("--------------------------------------\n"); 
 }
 
+bool judge_send(Cluster* cluster,Node* node, int current_slot){
+
+    if(node->want_to_send==false){
+        node->able_send = false;
+        return false;
+    }
+
+    if(!judge_energy(node))return false;
+
+    if(node->is_head)node->able_send = false;
+
+    //信道为响应和数据时，必须占有才可以发
+    if(cluster->channel.state == CHANNEL_DATA || cluster->channel.state == CHANNEL_CTS){
+        if(cluster->channel.owner_id != node->id){
+            node->able_send = false;
+            return false;
+        }
+
+    }
+
+    if(node->back_off_slot != 0){
+        node->able_send = false;
+        return false;
+    }
+
+    node->able_send = true;
+    return true;
+
+}
+
 int judge_clash(Cluster* cluster, int current_slot){
     int count = 0;
     for(int i=0;i<cluster->node_num;i++){
-        if(cluster[i]->want_to_send)count++;
+        if(judge_send(cluster,cluster->drones[i],current_slot))count++;
     }
     return count;
 }
@@ -215,17 +294,198 @@ void back_off(Cluster* cluster, int current_slot){
 
 }
 
-void update_drone(Cluster* cluster,Node* node, int current_slot){
-    send_rts();
-    send_cts();
-    send_data();
-    send_aci();
-    send_beacon();
-    send_packet();
-    drone_sleep();
+
+bool judge_energy(Node* node){
+    return node->energy > 1;
+}
+
+void send_rts(Cluster* cluster,Node* node, int current_slot){
+
+    //簇头不发rts
+    if(node->is_head)return;
+
+    //clash状态或rts状态才发rts
+    if(cluster->channel.state != CHANNEL_RTS && cluster->channel.state != CHANNEL_CLASH)return;
 
     //判断能量
-    if(node->energy<1){
+    if(!judge_energy(node))return;
+
+    //判断能不能发
+    if(node->able_send && cluster->channel.state != CHANNEL_CLASH){
+        drone->energy-=1;
+
+        printf("Drone %d at (%.2f, %.2f) in Cluster %d send rts\n", drone->id, drone->x, drone->y, cluster->id);
+
+        clusters.channel.owner_id = drone->id;
+
+    }else{
+        return;
+    }
+    //判断是否发送成功
+    if(RTS_SLOT == current_slot - cluster->channel.state_update_slot && cluster->channel.state == CHANNEL_RTS){
+        printf("Drone %d in Cluster %d successfully send rts\n", drone->id, cluster->id);
+        total_rts[cluster->id]+=1;
+
+        clusters.channel.owner_id = drone->id;
+        clusters.channel.nch_id = drone->id;
+
+    }
+
+}
+
+void send_cts(Cluster* cluster,Node* node, int current_slot){
+    //是簇头才发cts
+    if(!node->is_head)return;
+
+    if(!judge_energy(node))return;
+
+    if(cluster->channel.state == CHANNEL_CTS){
+        drone->energy -= 1;
+        printf("Cluster Head %d at (%.2f, %.2f) in Cluster %d send cts\n", drone->id, drone->x, drone->y, cluster->id);
+
+        clusters.channel.owner_id = drone->id;
+    }
+    else{
+        return;
+    }
+
+    //判断是否发送成功
+    if(CTS_SLOT == current_slot - cluster->channel.state_update_slot && cluster->channel.state == CHANNEL_CTS){
+        printf("Cluster Head %d in Cluster %d successfully send cts\n", drone->id, cluster->id);
+
+        total_cts[cluster->id]+=1;
+
+        clusters.channel.owner_id = drone->id;
+
+    }
+
+}
+
+void send_data(Cluster* cluster,Node* node, int current_slot){
+    //簇头不发data
+    if(node->is_head)return;
+
+    //判断能量
+    if(!judge_energy(node))return;
+
+    //判断能不能发
+    if(cluster->channel.nch_id == drone->id && cluster->channel.state == CHANNEL_DATA){
+        drone->energy-=1;
+
+        printf("Drone %d at (%.2f, %.2f) in Cluster %d send data\n", drone->id, drone->x, drone->y, cluster->id);
+
+    }else{
+        return;
+    }
+    //判断是否发送成功
+    if(DATA_SLOT == current_slot - cluster->channel.state_update_slot && cluster->channel.state == CHANNEL_DATA){
+        printf("Drone %d in Cluster %d successfully send data\n", drone->id, cluster->id);
+        total_data[cluster->id]+=1;
+
+    }
+
+    
+}
+
+void send_aci(Cluster* cluster,Node* node, int current_slot){
+
+    //虽然是簇头才发aci，但模拟的过程也可以由接收方模拟发?
+    if(!node->is_head)return;
+
+    if(!judge_energy(node))return;
+
+    if(cluster->channel.state == CHANNEL_ACI){//?nch_id==drone->id
+        drone->energy -= 1;
+        printf("Cluster Head %d at (%.2f, %.2f) in Cluster %d send aci\n", drone->id, drone->x, drone->y, cluster->id);
+
+    }
+    else{
+        return;
+    }
+
+    //判断是否发送成功
+    if(ACI_SLOT == current_slot - cluster->channel.state_update_slot && cluster->channel.state == CHANNEL_CTS){
+        printf("Cluster Head %d in Cluster %d successfully send aci\n", drone->id, cluster->id);
+
+        total_aci[cluster->id]+=1;
+
+        clusters.channel.owner_id = drone->id;
+
+    }
+
+    
+}
+
+void send_beacon(Cluster* cluster,Node* node, int current_slot){
+    //簇头才发beacon
+    if(!node->is_head)return;
+
+    if(!judge_energy(node))return;
+
+    if(cluster->channel.state == CHANNEL_BEACON){//?nch_id==drone->id
+        drone->energy -= 1;
+        printf("Cluster Head %d at (%.2f, %.2f) in Cluster %d send beacon\n", drone->id, drone->x, drone->y, cluster->id);
+
+    }
+    else{
+        return;
+    }
+
+    //判断是否发送成功
+    if(BEACON_SLOT == current_slot - cluster->channel.state_update_slot && cluster->channel.state == CHANNEL_BEACON){
+        printf("Cluster Head %d in Cluster %d successfully send beacon\n", drone->id, cluster->id);
+
+        total_beacon[cluster->id]+=1;
+
+        clusters.channel.owner_id = drone->id;
+
+    }
+    
+}
+
+void send_packet(Cluster* cluster,Node* node, int current_slot){
+    //簇头不发packet
+    if(node->is_head)return;
+
+    //判断能量
+    if(!judge_energy(node))return;
+
+    //判断能不能发
+    if(cluster->channel.nch_id == drone->id && cluster->channel.state == CHANNEL_PACKET){
+        drone->energy-=1;
+
+        printf("Drone %d at (%.2f, %.2f) in Cluster %d send packet\n", drone->id, drone->x, drone->y, cluster->id);
+
+    }else{
+        return;
+    }
+    //判断是否发送成功
+    if(PACKET_SLOT == current_slot - cluster->channel.state_update_slot && cluster->channel.state == CHANNEL_PACKET){
+        printf("Drone %d in Cluster %d successfully send packet\n", drone->id, cluster->id);
+        total_packet[cluster->id]+=1;
+
+    }
+    
+}
+
+//没用
+void drone_sleep(Cluster* cluster,Node* node, int current_slot){
+    if(drone->is_head)return;
+    if(drone->back_off_slot>0)return;
+    
+}
+
+void update_drone(Cluster* cluster,Node* node, int current_slot){
+    send_rts(cluster,drone,current_slot);
+    send_cts(cluster,drone,current_slot);
+    send_data(cluster,drone,current_slot);
+    send_aci(cluster,drone,current_slot);
+    send_beacon(cluster,drone,current_slot);
+    send_packet(cluster,drone,current_slot);
+    drone_sleep(cluster,drone,current_slot);
+
+    //判断能量
+    if(!judge_energy(noode)){
         node->is_dead = true;
         node->dead_slot = current_slot;
     }
